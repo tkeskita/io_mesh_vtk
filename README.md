@@ -2,7 +2,7 @@
 
 ## Introduction
 
-mesh_io_vtk is an add-on for ([Blender 2.8](https://www.blender.org/2-8)
+io_mesh_vtk is an add-on for ([Blender 2.8](https://www.blender.org/2-8)
 for importing and exporting mesh data in
 VTK ([Visualization ToolKit](https://www.vtk.org))
 file format used widely in scientific computation applications.

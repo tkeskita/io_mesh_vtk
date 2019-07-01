@@ -27,7 +27,7 @@ bl_info = {
     "blender": (2, 80, 0),
     "location": "File > Import-Export > VTK",
     "description": "Import-Export of VTK (Visualization ToolKit, www.vtk.org) files",
-    "wiki_url": "https://github.com/tkeskita/mesh_io_vtk",
+    "wiki_url": "https://github.com/tkeskita/io_mesh_vtk",
     "support": 'COMMUNITY',
     "category": "Import-Export",
 }
