@@ -54,6 +54,16 @@ else:
     #    ui,
     #)
 
+# Set up logging of messages using Python logging
+# Logging is nicely explained in:
+# https://code.blender.org/2016/05/logging-from-python-code-in-blender/
+# To see debug messages, configure logging in file
+# $HOME/.config/blender/{version}/scripts/startup/setup_logging.py
+# add there something like:
+# import logging
+# logging.basicConfig(format='%(funcName)s: %(message)s', level=logging.DEBUG)
+import logging
+l = logging.getLogger(__name__)
 
 @orientation_helper(axis_forward='Y', axis_up='Z')
 class ExportVTK(bpy.types.Operator, ExportHelper):
@@ -79,6 +89,19 @@ class ExportVTK(bpy.types.Operator, ExportHelper):
         return {'FINISHED'}
 
 
+class ImportVTK(bpy.types.Operator, ImportHelper):
+    '''Import VTK file as mesh object'''
+    bl_idname = "import_mesh.vtk"
+    bl_label = "Import VTK"
+
+    filename_ext = ".vtk"
+    filter_glob: StringProperty(default="*.vtk", options={'HIDDEN'})
+
+    def execute(self, context):
+        ascii_read_vtk(self.filepath)
+        return {'FINISHED'}
+
+
 def menu_import(self, context):
     self.layout.operator(ImportVTK.bl_idname, text="VTK (.vtk)")
 
@@ -87,6 +110,7 @@ def menu_export(self, context):
 
 classes = (
     ExportVTK,
+    ImportVTK,
 )
 
 def register():
@@ -94,16 +118,19 @@ def register():
         bpy.utils.register_class(cls)
 
     bpy.types.TOPBAR_MT_file_export.append(menu_export)
+    bpy.types.TOPBAR_MT_file_import.append(menu_import)
 
 def unregister():
     for cls in classes:
         bpy.utils.unregister_class(cls)
 
     bpy.types.TOPBAR_MT_file_export.remove(menu_export)
+    bpy.types.TOPBAR_MT_file_import.append(menu_import)
 
 
 if __name__ == "__main__":
     register()
+
 
 
 def ascii_write_vtk(filepath, obdata):
@@ -147,6 +174,162 @@ def ascii_write_vtk(filepath, obdata):
                             fw("%f %f %f %f\n" % (v[0], v[1], v[2], v[3]))
                             found = True
                             continue
+
+def ascii_read_vtk(filepath):
+    '''ASCII VTK reader'''
+
+    points = [] # List of X, Y and Z coordinates for VTK points
+    polygons = [] # List of number of points and point indices for polygons
+
+    [ob, points, polygons] = ascii_read_vtk_get_data(filepath)
+    if not points or not polygons or not ob:
+        l.info("No points imported")
+        return None
+
+    l.debug("Number of points data read: %d" % len(points))
+    l.debug("Number of polygons data read: %d" % len(polygons))
+
+    create_verts_and_faces(ob, points, polygons)
+
+
+def ascii_read_vtk_get_data(filepath):
+    '''Get data from ASCII VTK file. Returns mesh object, list of
+    points and list of polygons.
+    '''
+
+    import re
+    data = open(filepath, 'r')
+    ascii = False # Flag to mark "ASCII" entry in file
+    mode = "" # Mode of number import (POINTS, POLYGONS, COLOR_SCALARS)
+    dataset = "" # Type of dataset (POLYDATA, UNSTRUCTURED_GRID)
+    points = [] # List of X, Y and Z coordinates for VTK points
+    polygons = [] # List of number of points and point indices for polygons
+    ob = None # Mesh object for the final data
+
+    for line in data:
+        line = line.rstrip() # Remove trailing characters
+
+        # Skip comment lines
+        if re.search(r'^\s*\#', line):
+            l.debug("got comment line")
+            continue
+
+        # String lines. Note: re.M is required to match line end with '$'
+        regex = re.search(r'^([\ \w]+)$', line, re.M)
+        if regex:
+            s = str(regex.group(1))
+            if s == "ASCII":
+                l.debug("got ascii")
+                ascii = True
+                continue
+            if s == "DATASET POLYDATA":
+                l.debug("got polydata")
+                dataset = "POLYDATA"
+                continue
+            if s == "DATASET UNSTRUCTURED_GRID":
+                l.debug("got unstructured_grid")
+                dataset = "UNSTRUCTURED_GRID"
+                l.info("Unstructured grid import isn't yet implemented, stopping.")
+                return None, None, None
+            if re.search(r"^POINTS", s):
+                l.debug("got points")
+                mode = "POINTS"
+                continue
+            if re.search(r"^POLYGONS", s):
+                l.debug("got polygons")
+                mode = "POLYGONS"
+                continue
+            if re.search(r"^SCALARS", s):
+                l.debug("got scalars")
+                l.info("SCALARS not yet implemented, stopping import here.")
+                return ob, points, polygons
+                mode = "SCALARS"
+                continue
+            if re.search(r"^COLOR_SCALARS", s):
+                l.debug("got color scalars")
+                l.info("COLOR_SCALARS not yet implemented, stopping import here.")
+                return ob, points, polygons
+                mode = "COLOR_SCALARS"
+                continue
+
+            # Use first non-keyword match as name for the object
+            if not 'name' in locals() and re.search(r'[a-zA-Z]?', line):
+                name = s
+                l.debug("got name %s" % name)
+                if not name in bpy.data.objects:
+                    l.debug("Create new mesh object " + name)
+                    mesh_data = bpy.data.meshes.new(name)
+                    ob = bpy.data.objects.new(name, mesh_data)
+                    bpy.context.scene.collection.objects.link(ob)
+                else:
+                    l.debug("TODO: Remove all vertices")
+                continue
+
+        # Numerical data lines
+        regex = re.search(r'^([dDeE\s\d\.\-]+)$', line, re.M)
+        if regex:
+
+            # Exit if no mode is specified for numerical data
+            if mode == "":
+                l.info("Error: Found numerical data before DATASET has " \
+                       + "been specified, stopping.")
+                return ob, points, polygons
+
+            # Exit if no ASCII entry has been found in file at this point
+            if not ascii:
+                l.info("Error: This is not an ASCII VTK file, stopping.")
+                return ob, points, polygons
+
+            s = str(regex.group(1))
+            numbers = s.split()
+            # l.debug("got %d numbers" % len(numbers))
+
+            for x in numbers:
+                if mode == "POINTS":
+                    points.append(float(x))
+                elif mode == "POLYGONS":
+                    polygons.append(int(x))
+                elif mode == "COLOR_SCALARS":
+                    return ob, points, polygons
+                else:
+                    l.info("Error: Unknown mode " + mode)
+                    return ob, points, polygons
+
+    return ob, points, polygons
+
+def create_verts_and_faces(ob, points, polygons):
+    '''Create vertices and faces to object ob from point list and polygons list'''
+
+    verts = [] # list of x, y, z point coordinate triplets
+    faces = [] # list of vertice indices for faces
+
+    # TODO: Find better way of conversion, these are ugly.
+
+    # Convert list of point coordinates into triplets
+    triplet = []
+    for x in points:
+        triplet.append(x)
+        if len(triplet) == 3:
+            verts.append(tuple(triplet))
+            triplet=[]
+
+    # Convert list of vertex indices into face vertex index list
+    ilist = []
+    i = 0
+    for x in polygons:
+        if i == 0:
+            np = int(x)
+            i += 1
+        else:
+            ilist.append(int(x))
+            i += 1
+            if i == np + 1:
+                faces.append(tuple(ilist))
+                i = 0
+                ilist = []
+
+    # Create vertices and faces into mesh object
+    ob.data.from_pydata(verts, [], faces)
 
 
 def vtk_header(name):
