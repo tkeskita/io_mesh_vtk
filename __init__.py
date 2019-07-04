@@ -21,12 +21,12 @@
 # <pep8 compliant>
 
 bl_info = {
-    "name": "VTK Import-Export",
+    "name": "VTK Surface Mesh Import-Export",
     "author": "Tuomo Keskitalo",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (2, 80, 0),
     "location": "File > Import-Export > VTK",
-    "description": "Import-Export of VTK (Visualization ToolKit, www.vtk.org) files",
+    "description": "Import-Export of VTK (Visualization ToolKit) polydata (surface mesh) files",
     "wiki_url": "https://github.com/tkeskita/io_mesh_vtk",
     "support": 'COMMUNITY',
     "category": "Import-Export",
@@ -69,16 +69,10 @@ l = logging.getLogger(__name__)
 class ExportVTK(bpy.types.Operator, ExportHelper):
     '''Save active object mesh and vertex data to VTK file'''
     bl_idname = "export_mesh.vtk"
-    bl_label = "Export VTK"
+    bl_label = "Export VTK Polydata"
 
     filename_ext = ".vtk"
     filter_glob: StringProperty(default="*.vtk", options={'HIDDEN'})
-
-    #use_bin: BoolProperty(
-    #        name="Binary",
-    #        description="Export in binary VTK format",
-    #        default=False,
-    #)
 
     def execute(self, context):
         import itertools
@@ -92,21 +86,21 @@ class ExportVTK(bpy.types.Operator, ExportHelper):
 class ImportVTK(bpy.types.Operator, ImportHelper):
     '''Import VTK file as mesh object'''
     bl_idname = "import_mesh.vtk"
-    bl_label = "Import VTK"
+    bl_label = "Import VTK Polydata"
 
     filename_ext = ".vtk"
     filter_glob: StringProperty(default="*.vtk", options={'HIDDEN'})
 
     def execute(self, context):
-        ascii_read_vtk(self.filepath)
+        ascii_read_vtk(self)
         return {'FINISHED'}
 
 
 def menu_import(self, context):
-    self.layout.operator(ImportVTK.bl_idname, text="VTK (.vtk)")
+    self.layout.operator(ImportVTK.bl_idname, text="VTK Polydata (.vtk)")
 
 def menu_export(self, context):
-    self.layout.operator(ExportVTK.bl_idname, text="VTK (.vtk)")
+    self.layout.operator(ExportVTK.bl_idname, text="VTK Polydata (.vtk)")
 
 classes = (
     ExportVTK,
@@ -134,7 +128,7 @@ if __name__ == "__main__":
 
 
 def ascii_write_vtk(filepath, obdata):
-    '''ASCII VTK writer'''
+    '''ASCII VTK Polydata writer'''
     
     with open(filepath, 'w') as data:
         fw = data.write
@@ -175,13 +169,13 @@ def ascii_write_vtk(filepath, obdata):
                             found = True
                             continue
 
-def ascii_read_vtk(filepath):
-    '''ASCII VTK reader'''
+def ascii_read_vtk(self):
+    '''ASCII VTK Polydata reader'''
 
     points = [] # List of X, Y and Z coordinates for VTK points
     polygons = [] # List of number of points and point indices for polygons
 
-    [ob, points, polygons] = ascii_read_vtk_get_data(filepath)
+    [ob, points, polygons] = ascii_read_vtk_get_data(self)
     if not points or not polygons or not ob:
         l.info("No points imported")
         return None
@@ -192,16 +186,16 @@ def ascii_read_vtk(filepath):
     create_verts_and_faces(ob, points, polygons)
 
 
-def ascii_read_vtk_get_data(filepath):
-    '''Get data from ASCII VTK file. Returns mesh object, list of
+def ascii_read_vtk_get_data(self):
+    '''Get data from ASCII VTK Polydata file. Returns mesh object, list of
     points and list of polygons.
     '''
 
     import re
-    data = open(filepath, 'r')
+    data = open(self.filepath, 'r')
     ascii = False # Flag to mark "ASCII" entry in file
     mode = "" # Mode of number import (POINTS, POLYGONS, COLOR_SCALARS)
-    dataset = "" # Type of dataset (POLYDATA, UNSTRUCTURED_GRID)
+    dataset = "" # Type of dataset (POLYDATA)
     points = [] # List of X, Y and Z coordinates for VTK points
     polygons = [] # List of number of points and point indices for polygons
     ob = None # Mesh object for the final data
@@ -228,8 +222,7 @@ def ascii_read_vtk_get_data(filepath):
                 continue
             if s == "DATASET UNSTRUCTURED_GRID":
                 l.debug("got unstructured_grid")
-                dataset = "UNSTRUCTURED_GRID"
-                l.info("Unstructured grid import isn't yet implemented, stopping.")
+                self.report({'ERROR'}, "Unstructured Grid import isn't supported!")
                 return None, None, None
             if re.search(r"^POINTS", s):
                 l.debug("got points")
@@ -241,13 +234,13 @@ def ascii_read_vtk_get_data(filepath):
                 continue
             if re.search(r"^SCALARS", s):
                 l.debug("got scalars")
-                l.info("SCALARS not yet implemented, stopping import here.")
+                self.report({'WARNING'}, "Import may be partial: SCALARS is not implemented.")
                 return ob, points, polygons
                 mode = "SCALARS"
                 continue
             if re.search(r"^COLOR_SCALARS", s):
                 l.debug("got color scalars")
-                l.info("COLOR_SCALARS not yet implemented, stopping import here.")
+                self.report({'WARNING'}, "Import may be partial: COLOR_SCALARS is not implemented.")
                 return ob, points, polygons
                 mode = "COLOR_SCALARS"
                 continue
@@ -256,13 +249,17 @@ def ascii_read_vtk_get_data(filepath):
             if not 'name' in locals() and re.search(r'[a-zA-Z]?', line):
                 name = s
                 l.debug("got name %s" % name)
-                if not name in bpy.data.objects:
-                    l.debug("Create new mesh object " + name)
-                    mesh_data = bpy.data.meshes.new(name)
-                    ob = bpy.data.objects.new(name, mesh_data)
-                    bpy.context.scene.collection.objects.link(ob)
-                else:
-                    l.debug("TODO: Remove all vertices")
+
+                if name in bpy.data.objects:
+                    l.debug("Delete existing object " + name)
+                    bpy.ops.object.select_all(action='DESELECT')
+                    bpy.data.objects[name].select_set(True)
+                    bpy.ops.object.delete()
+
+                l.debug("Create new mesh object " + name)
+                mesh_data = bpy.data.meshes.new(name)
+                ob = bpy.data.objects.new(name, mesh_data)
+                bpy.context.scene.collection.objects.link(ob)
                 continue
 
         # Numerical data lines
@@ -271,14 +268,13 @@ def ascii_read_vtk_get_data(filepath):
 
             # Exit if no mode is specified for numerical data
             if mode == "":
-                l.info("Error: Found numerical data before DATASET has " \
-                       + "been specified, stopping.")
+                self.report({'WARNING'}, "Import may be partial: Found numerical data before DATASET")
                 return ob, points, polygons
 
             # Exit if no ASCII entry has been found in file at this point
             if not ascii:
-                l.info("Error: This is not an ASCII VTK file, stopping.")
-                return ob, points, polygons
+                self.report({'ERROR'}, "This is not an ASCII VTK file, stopping.")
+                return None, None, None
 
             s = str(regex.group(1))
             numbers = s.split()
@@ -292,7 +288,7 @@ def ascii_read_vtk_get_data(filepath):
                 elif mode == "COLOR_SCALARS":
                     return ob, points, polygons
                 else:
-                    l.info("Error: Unknown mode " + mode)
+                    self.report({'WARNING'}, "Import may be partial: Got unsupported mode " + mode)
                     return ob, points, polygons
 
     return ob, points, polygons
