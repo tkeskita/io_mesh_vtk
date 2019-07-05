@@ -156,7 +156,8 @@ def ascii_write_vtk(filepath, obdata):
 
             # Blender saves vertex colors per each face loop
             # -> There can be several colors per vertex.
-            # For now this algorithm takes color from first matching face loop.
+            # However VTK supports only one color per vertex, so
+            # this algorithm just takes color from first matching face loop.
             for i in range(0, len(obdata.vertices)):
                 found = False
                 for p in obdata.polygons:
@@ -175,15 +176,21 @@ def ascii_read_vtk(self):
     points = [] # List of X, Y and Z coordinates for VTK points
     polygons = [] # List of number of points and point indices for polygons
 
-    [ob, points, polygons] = ascii_read_vtk_get_data(self)
+    self.report({'INFO'}, "Starting import..")
+    [ob, points, polygons, color_scalars] = ascii_read_vtk_get_data(self)
     if not points or not polygons or not ob:
-        l.info("No points imported")
+        self.report({'ERROR'}, "No points/faces were imported")
         return None
 
     l.debug("Number of points data read: %d" % len(points))
     l.debug("Number of polygons data read: %d" % len(polygons))
+    l.debug("Number of color scalars data read: %d" % len(color_scalars))
 
-    create_verts_and_faces(ob, points, polygons)
+    create_verts_and_faces(ob, points, polygons, color_scalars)
+    self.report({'INFO'}, "Imported %s: " % ob.name \
+                + "%d points, " % len(points) \
+                + "%d faces, " % len(polygons) \
+                + "and %d color scalars" % int(len(color_scalars) / 4.0))
 
 
 def ascii_read_vtk_get_data(self):
@@ -198,7 +205,9 @@ def ascii_read_vtk_get_data(self):
     dataset = "" # Type of dataset (POLYDATA)
     points = [] # List of X, Y and Z coordinates for VTK points
     polygons = [] # List of number of points and point indices for polygons
+    color_scalars = [] # List of color scalar values
     ob = None # Mesh object for the final data
+    vc_name = "" # Vertex color name
 
     for line in data:
         line = line.rstrip() # Remove trailing characters
@@ -223,7 +232,7 @@ def ascii_read_vtk_get_data(self):
             if s == "DATASET UNSTRUCTURED_GRID":
                 l.debug("got unstructured_grid")
                 self.report({'ERROR'}, "Unstructured Grid import isn't supported!")
-                return None, None, None
+                return None, None, None, None
             if re.search(r"^POINTS", s):
                 l.debug("got points")
                 mode = "POINTS"
@@ -235,13 +244,24 @@ def ascii_read_vtk_get_data(self):
             if re.search(r"^SCALARS", s):
                 l.debug("got scalars")
                 self.report({'WARNING'}, "Import may be partial: SCALARS is not implemented.")
-                return ob, points, polygons
+                return ob, points, polygons, color_scalars
                 mode = "SCALARS"
                 continue
             if re.search(r"^COLOR_SCALARS", s):
                 l.debug("got color scalars")
-                self.report({'WARNING'}, "Import may be partial: COLOR_SCALARS is not implemented.")
-                return ob, points, polygons
+                if not vc_name == "":
+                    self.report({'WARNING'}, "Import may be partial: Only one COLOR_SCALARS set is supported.")
+                    return ob, points, polygons, color_scalars
+
+                regex2 = re.search(r'^COLOR_SCALARS\s+(\w+)\s+\d+$', line, re.M)
+                if not regex2:
+                    self.report({'ERROR'}, "Error parsing COLOR_SCALARS")
+                    return ob, points, polygons, color_scalars
+
+                vc_name = str(regex2.group(1)) # Vertex color name
+                l.debug("Adding new vertex color " + vc_name)
+                bpy.ops.mesh.vertex_color_add()
+                ob.data.vertex_colors.active.name = vc_name
                 mode = "COLOR_SCALARS"
                 continue
 
@@ -256,10 +276,11 @@ def ascii_read_vtk_get_data(self):
                     bpy.data.objects[name].select_set(True)
                     bpy.ops.object.delete()
 
-                l.debug("Create new mesh object " + name)
+                l.debug("Create and activate new mesh object " + name)
                 mesh_data = bpy.data.meshes.new(name)
                 ob = bpy.data.objects.new(name, mesh_data)
                 bpy.context.scene.collection.objects.link(ob)
+                bpy.context.view_layer.objects.active = bpy.data.objects[name]
                 continue
 
         # Numerical data lines
@@ -269,31 +290,31 @@ def ascii_read_vtk_get_data(self):
             # Exit if no mode is specified for numerical data
             if mode == "":
                 self.report({'WARNING'}, "Import may be partial: Found numerical data before DATASET")
-                return ob, points, polygons
+                return ob, points, polygons, color_scalars
 
             # Exit if no ASCII entry has been found in file at this point
             if not ascii:
                 self.report({'ERROR'}, "This is not an ASCII VTK file, stopping.")
-                return None, None, None
+                return None, None, None, None
 
             s = str(regex.group(1))
             numbers = s.split()
             # l.debug("got %d numbers" % len(numbers))
-
             for x in numbers:
                 if mode == "POINTS":
                     points.append(float(x))
                 elif mode == "POLYGONS":
                     polygons.append(int(x))
                 elif mode == "COLOR_SCALARS":
-                    return ob, points, polygons
+                    color_scalars.append(float(x))
+
                 else:
                     self.report({'WARNING'}, "Import may be partial: Got unsupported mode " + mode)
-                    return ob, points, polygons
+                    return ob, points, polygons, color_scalars
 
-    return ob, points, polygons
+    return ob, points, polygons, color_scalars
 
-def create_verts_and_faces(ob, points, polygons):
+def create_verts_and_faces(ob, points, polygons, color_scalars):
     '''Create vertices and faces to object ob from point list and polygons list'''
 
     verts = [] # list of x, y, z point coordinate triplets
@@ -326,6 +347,25 @@ def create_verts_and_faces(ob, points, polygons):
 
     # Create vertices and faces into mesh object
     ob.data.from_pydata(verts, [], faces)
+
+    # Return or add color scalars as vertex colors
+    if len(color_scalars) == 0:
+        return None
+
+    vals = [] # color values
+    index = -1 # vertex index
+
+    for x in color_scalars:
+        vals.append(float(x))
+        if len(vals) == 4:
+            index += 1
+            # Blender saves vertex colors per each face loop
+            # Set color to all matching face loops
+            for p in ob.data.polygons:
+                for li in p.loop_indices:
+                    if ob.data.loops[li].vertex_index == index:
+                        ob.data.vertex_colors[0].data[li].color = vals
+            vals = []
 
 
 def vtk_header(name):

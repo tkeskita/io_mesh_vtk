@@ -11,7 +11,8 @@ Currently supported features include
 
 * ASCII legacy VTK file import (VTK polydata support only)
 * ASCII legacy VTK file export (VTK polydata support only)
-* Exports mesh (points and faces) and vertex colors as VTK color scalar data
+* Exports mesh (points and faces) and vertex colors as VTK color scalars
+* Import supports currently only one set of color scalars
 
 If you need more functionality for this add-on, please express you wishes on
 ([Github issues page](https://github.com/tkeskita/io_mesh_vtk/issues)) or discuss at
