@@ -9,8 +9,7 @@ file format used widely in scientific computation applications.
 
 Currently supported features include
 
-* ASCII legacy VTK file import (VTK polydata support only)
-* ASCII legacy VTK file export (VTK polydata support only)
+* ASCII legacy VTK file export (VTK polydata support only, no unstructured grids)
 * Exports mesh (points and faces) and vertex colors as VTK color scalars
 * Import supports currently only one set of color scalars
 

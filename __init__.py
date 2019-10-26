@@ -23,7 +23,7 @@
 bl_info = {
     "name": "VTK Surface Mesh Import-Export",
     "author": "Tuomo Keskitalo",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (2, 80, 0),
     "location": "File > Import-Export > VTK",
     "description": "Import-Export of VTK (Visualization ToolKit) polydata (surface mesh) files",
@@ -126,7 +126,6 @@ if __name__ == "__main__":
     register()
 
 
-
 def ascii_write_vtk(filepath, obdata):
     '''ASCII VTK Polydata writer'''
     
@@ -170,6 +169,7 @@ def ascii_write_vtk(filepath, obdata):
                             found = True
                             continue
 
+
 def ascii_read_vtk(self):
     '''ASCII VTK Polydata reader'''
 
@@ -177,29 +177,31 @@ def ascii_read_vtk(self):
     polygons = [] # List of number of points and point indices for polygons
 
     self.report({'INFO'}, "Starting import..")
-    [ob, points, polygons, color_scalars] = ascii_read_vtk_get_data(self)
-    if not points or not polygons or not ob:
-        self.report({'ERROR'}, "No points/faces were imported")
+    [ob, points, polygons, color_scalars, text] = \
+        ascii_read_vtk_get_data(self.filepath)
+
+    if not points or not polygons:
+        self.report({'ERROR'}, text + "No points or polygons imported.")
         return None
 
-    l.debug("Number of points data read: %d" % len(points))
-    l.debug("Number of polygons data read: %d" % len(polygons))
-    l.debug("Number of color scalars data read: %d" % len(color_scalars))
+    l.debug("Number of raw points data read: %d" % len(points))
+    l.debug("Number of raw polygons data read: %d" % len(polygons))
+    l.debug("Number of raw color scalars data read: %d" % len(color_scalars))
 
     create_verts_and_faces(ob, points, polygons, color_scalars)
-    self.report({'INFO'}, "Imported %s: " % ob.name \
-                + "%d points, " % len(points) \
-                + "%d faces, " % len(polygons) \
+    self.report({'INFO'}, text + "Imported %s: " % ob.name \
+                + "%d points, " % len(ob.data.vertices) \
+                + "%d faces, " % len(ob.data.polygons) \
                 + "and %d color scalars" % int(len(color_scalars) / 4.0))
 
 
-def ascii_read_vtk_get_data(self):
+def ascii_read_vtk_get_data(filepath):
     '''Get data from ASCII VTK Polydata file. Returns mesh object, list of
     points and list of polygons.
     '''
 
     import re
-    data = open(self.filepath, 'r')
+    data = open(filepath, 'r')
     ascii = False # Flag to mark "ASCII" entry in file
     mode = "" # Mode of number import (POINTS, POLYGONS, COLOR_SCALARS)
     dataset = "" # Type of dataset (POLYDATA)
@@ -208,6 +210,15 @@ def ascii_read_vtk_get_data(self):
     color_scalars = [] # List of color scalar values
     ob = None # Mesh object for the final data
     vc_name = "" # Vertex color name
+    text = "" # Error messages
+
+    try:
+        test = data.read()
+    except:
+        text = "Error reading file. Maybe file format " \
+               + "is binary (not supported)? "
+        return None, None, None, None, text
+    data.seek(0) # Rewind to beginning after test
 
     for line in data:
         line = line.rstrip() # Remove trailing characters
@@ -231,8 +242,8 @@ def ascii_read_vtk_get_data(self):
                 continue
             if s == "DATASET UNSTRUCTURED_GRID":
                 l.debug("got unstructured_grid")
-                self.report({'ERROR'}, "Unstructured Grid import isn't supported!")
-                return None, None, None, None
+                text = "Importing Unstructured Grid isn't supported! "
+                return None, None, None, None, text
             if re.search(r"^POINTS", s):
                 l.debug("got points")
                 mode = "POINTS"
@@ -243,20 +254,18 @@ def ascii_read_vtk_get_data(self):
                 continue
             if re.search(r"^SCALARS", s):
                 l.debug("got scalars")
-                self.report({'WARNING'}, "Import may be partial: SCALARS is not implemented.")
-                return ob, points, polygons, color_scalars
-                mode = "SCALARS"
-                continue
+                text = "Import may be partial: SCALARS is not implemented. Stopping. "
+                return ob, points, polygons, color_scalars, text
             if re.search(r"^COLOR_SCALARS", s):
                 l.debug("got color scalars")
                 if not vc_name == "":
-                    self.report({'WARNING'}, "Import may be partial: Only one COLOR_SCALARS set is supported.")
-                    return ob, points, polygons, color_scalars
+                    text = "Import may be partial: Only one COLOR_SCALARS set is supported. Stopping. "
+                    return ob, points, polygons, color_scalars, text
 
                 regex2 = re.search(r'^COLOR_SCALARS\s+(\w+)\s+\d+$', line, re.M)
                 if not regex2:
-                    self.report({'ERROR'}, "Error parsing COLOR_SCALARS")
-                    return ob, points, polygons, color_scalars
+                    text = "Error parsing COLOR_SCALARS. Stopping. "
+                    return ob, points, polygons, color_scalars, text
 
                 vc_name = str(regex2.group(1)) # Vertex color name
                 l.debug("Adding new vertex color " + vc_name)
@@ -289,13 +298,13 @@ def ascii_read_vtk_get_data(self):
 
             # Exit if no mode is specified for numerical data
             if mode == "":
-                self.report({'WARNING'}, "Import may be partial: Found numerical data before DATASET")
-                return ob, points, polygons, color_scalars
+                text = "Import may be partial: Found numerical data before DATASET. Stopping. "
+                return ob, points, polygons, color_scalars, text
 
             # Exit if no ASCII entry has been found in file at this point
             if not ascii:
-                self.report({'ERROR'}, "This is not an ASCII VTK file, stopping.")
-                return None, None, None, None
+                text = "ERROR: This is not an ASCII VTK file. "
+                return None, None, None, None, text
 
             s = str(regex.group(1))
             numbers = s.split()
@@ -309,18 +318,18 @@ def ascii_read_vtk_get_data(self):
                     color_scalars.append(float(x))
 
                 else:
-                    self.report({'WARNING'}, "Import may be partial: Got unsupported mode " + mode)
-                    return ob, points, polygons, color_scalars
+                    text = "Import may be partial: Got unsupported mode " \
+                           + mode + ". Stopping. "
+                    return ob, points, polygons, color_scalars, text
 
-    return ob, points, polygons, color_scalars
+    return ob, points, polygons, color_scalars, text
+
 
 def create_verts_and_faces(ob, points, polygons, color_scalars):
     '''Create vertices and faces to object ob from point list and polygons list'''
 
     verts = [] # list of x, y, z point coordinate triplets
     faces = [] # list of vertice indices for faces
-
-    # TODO: Find better way of conversion, these are ugly.
 
     # Convert list of point coordinates into triplets
     triplet = []
